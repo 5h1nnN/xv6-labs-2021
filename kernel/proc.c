@@ -120,6 +120,10 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // mmap state
+  memset(p->vma, 0, sizeof(p->vma));
+  p->vma_hi = TRAPFRAME;
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -301,6 +305,14 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // Give the child the same mmap regions as the parent.
+  for(i = 0; i < NVMA; i++){
+    np->vma[i] = p->vma[i];
+    if(p->vma[i].used)
+      filedup(p->vma[i].f);
+  }
+  np->vma_hi = p->vma_hi;
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -343,6 +355,10 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // Write back and unmap the process's mmap'd regions while its page
+  // table is still current.
+  munmapall();
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

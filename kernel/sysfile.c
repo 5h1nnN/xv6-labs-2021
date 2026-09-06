@@ -484,3 +484,211 @@ sys_pipe(void)
   }
   return 0;
 }
+
+// -------------------- mmap lab support --------------------
+
+static struct vma*
+find_vma(struct proc *p, uint64 addr)
+{
+  for(int i = 0; i < NVMA; i++){
+    if(p->vma[i].used && addr >= p->vma[i].va &&
+       addr < p->vma[i].va + p->vma[i].len)
+      return &p->vma[i];
+  }
+  return 0;
+}
+
+// Write a mapped (MAP_SHARED, writable) page back to its file and
+// unmap it.  Called with the process's page table current.
+static void
+unmap_page(struct vma *v, uint64 a)
+{
+  struct proc *p = myproc();
+
+  if(v->flags == MAP_SHARED && (v->prot & PROT_WRITE) && v->f->writable){
+    uint64 off = a - v->va;
+    uint n = PGSIZE;
+    if(off + n > v->len)
+      n = v->len - off;
+    if(n > 0){
+      struct inode *ip = v->f->ip;
+      begin_op();
+      ilock(ip);
+      // user==1: writei copies the bytes from the user address a.
+      writei(ip, 1, a, off, n);
+      iunlock(ip);
+      end_op();
+    }
+  }
+  uvmunmap(p->pagetable, a, 1, 1);
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 va;
+  int length, prot, flags, fd, offset;
+  struct proc *p = myproc();
+  struct file *f;
+
+  // addr (arg0) and offset (arg5) must be zero for this lab.
+  uint64 addr;
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 ||
+     argint(2, &prot) < 0 || argint(3, &flags) < 0 ||
+     argint(4, &fd) < 0 || argint(5, &offset) < 0)
+    return -1;
+  if(addr != 0 || offset != 0 || length <= 0)
+    return -1;
+  if(fd < 0 || fd >= NOFILE || p->ofile[fd] == 0)
+    return -1;
+  if(flags != MAP_SHARED && flags != MAP_PRIVATE)
+    return -1;
+  f = p->ofile[fd];
+  // A MAP_SHARED writable mapping requires a writable file.
+  if(flags == MAP_SHARED && (prot & PROT_WRITE) && !f->writable)
+    return -1;
+
+  // Find a free VMA slot.
+  int slot = -1;
+  for(int i = 0; i < NVMA; i++){
+    if(!p->vma[i].used){
+      slot = i;
+      break;
+    }
+  }
+  if(slot < 0)
+    return -1;
+
+  // Choose a free virtual address just below the previous mapping,
+  // so mappings grow downwards from the trampoline area.
+  uint64 len = (uint64)length;
+  uint64 amt = PGROUNDUP(len);
+  if(amt >= p->vma_hi)
+    return -1;
+  va = p->vma_hi - amt;
+
+  p->vma[slot].used = 1;
+  p->vma[slot].va = va;
+  p->vma[slot].len = len;
+  p->vma[slot].prot = prot;
+  p->vma[slot].flags = flags;
+  p->vma[slot].f = filedup(f);
+  p->vma_hi = va;
+  return va;
+}
+
+int
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  struct proc *p = myproc();
+  struct vma *v;
+
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+  if(length < 0)
+    return -1;
+
+  // Find the VMA that covers [addr, addr+length).
+  int idx = -1;
+  for(int i = 0; i < NVMA; i++){
+    if(p->vma[i].used && addr >= p->vma[i].va &&
+       addr + length <= p->vma[i].va + p->vma[i].len){
+      idx = i;
+      break;
+    }
+  }
+  if(idx < 0)
+    return -1;
+  v = &p->vma[idx];
+
+  // Unmap the pages in the range (mapped or not).
+  for(uint64 a = PGROUNDDOWN(addr); a < addr + (uint64)length; a += PGSIZE)
+    if(walkaddr(p->pagetable, a) != 0)
+      unmap_page(v, a);
+
+  // Shrink or remove the VMA.
+  if(addr == v->va && length == v->len){
+    fileclose(v->f);
+    v->used = 0;
+  } else if(addr == v->va){
+    v->va += PGROUNDUP((uint64)length);
+    v->len -= (uint64)length;
+  } else if(addr + length == v->va + v->len){
+    v->len -= (uint64)length;
+  } else {
+    // punching a hole in the middle isn't supported
+    return -1;
+  }
+  return 0;
+}
+
+// Handle a page fault (load or store) inside a mapped region by
+// reading the file page into a freshly allocated page.  Returns 0 on
+// success and -1 if the faulting address is not part of a mapping.
+int
+mmapfault(uint64 faultva)
+{
+  struct proc *p = myproc();
+  struct vma *v = find_vma(p, faultva);
+  char *mem;
+  uint64 a, off, n;
+  int perm;
+  struct inode *ip;
+  int r;
+
+  if(v == 0)
+    return -1;
+
+  a = PGROUNDDOWN(faultva);
+  if(walkaddr(p->pagetable, a) != 0)
+    return 0;   // already mapped (e.g. second fault on same page)
+  if((mem = kalloc()) == 0)
+    return -1;
+
+  memset(mem, 0, PGSIZE);
+  off = a - v->va;
+  n = PGSIZE;
+  if(off + n > v->len)
+    n = v->len - off;
+
+  ip = v->f->ip;
+  begin_op();
+  ilock(ip);
+  r = readi(ip, 0, (uint64)mem, off, n);
+  iunlock(ip);
+  end_op();
+  if(r < 0){
+    kfree(mem);
+    return -1;
+  }
+
+  perm = PTE_U;
+  if(v->prot & PROT_READ) perm |= PTE_R;
+  if(v->prot & PROT_WRITE) perm |= PTE_W;
+  if(v->prot & PROT_EXEC) perm |= PTE_X;
+  if(mappages(p->pagetable, a, PGSIZE, (uint64)mem, perm) != 0){
+    kfree(mem);
+    return -1;
+  }
+  return 0;
+}
+
+// Unmap and release all of the process's mappings.  Called when the
+// process exits and when it execs a new program.
+void
+munmapall(void)
+{
+  struct proc *p = myproc();
+
+  for(int i = 0; i < NVMA; i++){
+    if(!p->vma[i].used)
+      continue;
+    for(uint64 a = p->vma[i].va; a < p->vma[i].va + p->vma[i].len; a += PGSIZE)
+      if(walkaddr(p->pagetable, a) != 0)
+        unmap_page(&p->vma[i], a);
+    fileclose(p->vma[i].f);
+    p->vma[i].used = 0;
+  }
+}

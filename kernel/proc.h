@@ -1,3 +1,14 @@
+// A memory-mapped file region (mmap lab).  Maps [va, va+len) lazily.
+#define NVMA 16
+struct vma {
+  int used;
+  uint64 va;
+  uint64 len;
+  int prot;    // PROT_* bits
+  int flags;   // MAP_SHARED or MAP_PRIVATE
+  struct file *f;
+};
+
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -105,4 +116,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  // memory-mapped file regions (the mmap lab)
+  struct vma vma[NVMA];
+  uint64 vma_hi;               // next candidate mapping address
 };

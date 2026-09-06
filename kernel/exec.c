@@ -109,6 +109,8 @@ exec(char *path, char **argv)
   safestrcpy(p->name, last, sizeof(p->name));
     
   // Commit to the user image.
+  // The new program can't keep the old mmap'd regions.
+  munmapall();
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
   p->sz = sz;

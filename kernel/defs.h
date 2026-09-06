@@ -153,6 +153,10 @@ void            uartputc(int);
 void            uartputc_sync(int);
 int             uartgetc(void);
 
+// mmap support (implemented in sysfile.c)
+int             mmapfault(uint64);
+void            munmapall(void);
+
 // vm.c
 void            kvminit(void);
 void            kvminithart(void);
