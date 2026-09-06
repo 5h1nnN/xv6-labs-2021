@@ -223,6 +223,7 @@ void            e1000_intr(void);
 int             e1000_transmit(struct mbuf*);
 
 // net.c
+void            net_announce(void);
 void            net_rx(struct mbuf*);
 void            net_tx_udp(struct mbuf*, uint32, uint16, uint16);
 

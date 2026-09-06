@@ -90,19 +90,47 @@ e1000_init(uint32 *xregs)
   regs[E1000_RDTR] = 0; // interrupt after every received packet (no timer)
   regs[E1000_RADV] = 0; // interrupt after every packet (no timer)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
+
+  // Tell the gateway our MAC address so that it doesn't have to
+  // resolve us with ARP before answering our packets.
+  net_announce();
+  net_announce();
+  net_announce();
 }
 
 int
 e1000_transmit(struct mbuf *m)
 {
   //
-  // Your code here.
+  // Program the ethernet frame in m into the TX descriptor ring so
+  // that the e1000 sends it, and stash a pointer to m so that it can
+  // be freed once the e1000 has finished transmitting it.
   //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
-  
+  uint32 tdt;
+
+  acquire(&e1000_lock);
+  tdt = regs[E1000_TDT];
+  if((tx_ring[tdt].status & E1000_TXD_STAT_DD) == 0){
+    // The ring is full: the e1000 hasn't finished the previous
+    // transmission that used this descriptor.
+    release(&e1000_lock);
+    return -1;
+  }
+
+  // Free the mbuf that was previously transmitted from this
+  // descriptor, if any.
+  if(tx_mbufs[tdt])
+    mbuffree(tx_mbufs[tdt]);
+
+  tx_ring[tdt].addr = (uint64) m->head;
+  tx_ring[tdt].length = m->len;
+  tx_ring[tdt].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS; // report status
+  tx_ring[tdt].status = 0;
+  tx_mbufs[tdt] = m;
+
+  // Tell the e1000 that a new packet is waiting at the descriptor.
+  regs[E1000_TDT] = (tdt + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
@@ -110,11 +138,38 @@ static void
 e1000_recv(void)
 {
   //
-  // Your code here.
+  // Deliver every packet the e1000 has written into the RX ring,
+  // replacing each consumed buffer with a fresh one.
   //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+  uint32 rdt;
+
+  while(1){
+    // The next packet, if any, is at the descriptor after RDT.
+    rdt = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    if((rx_ring[rdt].status & E1000_RXD_STAT_DD) == 0)
+      break;
+
+    struct mbuf *m = rx_mbufs[rdt];
+    m->len = rx_ring[rdt].length;
+
+    // Give the e1000 a fresh buffer to replace the one we're
+    // handing to the network stack.
+    struct mbuf *n = mbufalloc(0);
+    if(n == 0){
+      // No memory for a replacement buffer; keep this one for the
+      // device and drop the packet.
+      rx_ring[rdt].status = 0;
+      regs[E1000_RDT] = rdt;
+      break;
+    }
+    rx_ring[rdt].addr = (uint64) n->head;
+    rx_ring[rdt].status = 0;
+    rx_mbufs[rdt] = n;
+
+    // Record that we've processed this descriptor.
+    regs[E1000_RDT] = rdt;
+    net_rx(m);
+  }
 }
 
 void
@@ -124,6 +179,5 @@ e1000_intr(void)
   // without this the e1000 won't raise any
   // further interrupts.
   regs[E1000_ICR] = 0xffffffff;
-
   e1000_recv();
 }

@@ -13,7 +13,9 @@
 
 static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15); // qemu's idea of the guest IP
 static uint8 local_mac[ETHADDR_LEN] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
-static uint8 broadcast_mac[ETHADDR_LEN] = { 0xFF, 0XFF, 0XFF, 0XFF, 0XFF, 0XFF };
+// The only other host on qemu's emulated LAN is the slirp gateway
+// (10.0.2.2), which always uses this MAC address.
+static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 // Strips data from the start of the buffer and returns a pointer to it.
 // Returns 0 if less than the full requested length is available.
@@ -159,18 +161,22 @@ in_cksum(const unsigned char *addr, int len)
   return answer;
 }
 
-// sends an ethernet packet
+// sends an ethernet packet.  If dmac is non-zero the frame is sent to
+// that address (used for ARP replies); otherwise it is sent to the slirp
+// gateway MAC, which is the only other host on qemu's LAN.  (Sending the
+// frames unicast to the gateway lets qemu's slirp learn our MAC address,
+// so it does not need to resolve us with ARP before answering.)
 static void
-net_tx_eth(struct mbuf *m, uint16 ethtype)
+net_tx_eth(struct mbuf *m, uint16 ethtype, uint8 *dmac)
 {
   struct eth *ethhdr;
 
   ethhdr = mbufpushhdr(m, *ethhdr);
   memmove(ethhdr->shost, local_mac, ETHADDR_LEN);
-  // In a real networking stack, dhost would be set to the address discovered
-  // through ARP. Because we don't support enough of the ARP protocol, set it
-  // to broadcast instead.
-  memmove(ethhdr->dhost, broadcast_mac, ETHADDR_LEN);
+  if(dmac != 0)
+    memmove(ethhdr->dhost, dmac, ETHADDR_LEN);
+  else
+    memmove(ethhdr->dhost, host_mac, ETHADDR_LEN);
   ethhdr->type = htons(ethtype);
   if (e1000_transmit(m)) {
     mbuffree(m);
@@ -195,7 +201,7 @@ net_tx_ip(struct mbuf *m, uint8 proto, uint32 dip)
   iphdr->ip_sum = in_cksum((unsigned char *)iphdr, sizeof(*iphdr));
 
   // now on to the ethernet layer
-  net_tx_eth(m, ETHTYPE_IP);
+  net_tx_eth(m, ETHTYPE_IP, 0);
 }
 
 // sends a UDP packet
@@ -241,9 +247,19 @@ net_tx_arp(uint16 op, uint8 dmac[ETHADDR_LEN], uint32 dip)
   memmove(arphdr->tha, dmac, ETHADDR_LEN);
   arphdr->tip = htonl(dip);
 
-  // header is ready, send the packet
-  net_tx_eth(m, ETHTYPE_ARP);
+  // header is ready, send the packet.  The ARP reply is sent
+  // unicast to the requester, as ARP requires.
+  net_tx_eth(m, ETHTYPE_ARP, dmac);
   return 0;
+}
+
+// Announce our MAC/IP mapping to the gateway (a gratuitous ARP
+// reply), so that qemu's slirp does not need to resolve us with an
+// ARP request before it can send us packets.
+void
+net_announce(void)
+{
+  net_tx_arp(ARP_OP_REPLY, host_mac, local_ip);
 }
 
 // receives an ARP packet
