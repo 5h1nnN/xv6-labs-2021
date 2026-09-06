@@ -1,0 +1,49 @@
+Answers for Lab: page tables
+================================
+
+1) Which other xv6 system call(s) could be made faster using the shared
+   USYSCALL page?
+
+   Any system call that only needs to return a small, read-only piece of
+   kernel state that changes rarely would benefit.  For example uptime()
+   could simply read a shared "ticks" counter from a read-only page
+   instead of crossing into the kernel.  Other candidates are getppid(),
+   a clock/date call, or a read-only snapshot of system statistics such
+   as the number of processes.  The general rule is: if the answer is a
+   value the kernel already has and that the user is allowed to see,
+   publish it in a read-only shared page and save the trap overhead.
+
+2) Explain the output of vmprint in terms of Fig 3-4 from the text.
+
+   The dump is the three-level page table (Fig 3-4) of the init process
+   printed just after it finishes exec().  The first line is the address
+   of the root (level-2) page-table page.  The lines below it are the
+   valid PTEs at each level, indented by depth:
+
+     - one level of " .."  = entries of the root page table page;
+     - two levels of " .." = entries of a level-1 page-table page
+       referenced from the root;
+     - three levels          = leaf (level-0) PTEs that map real pages.
+
+   What does page 0 contain?  Page 0 is the first user page of the init
+   process: it holds the machine code (text segment) of the program
+   loaded by exec().
+
+   What is in page 2?  Page 2 lies inside init's low user memory: for
+   this small program it is part of the loaded program (data/stack
+   area) - init's text+data is loaded at the low addresses and its
+   stack is allocated just above, both inside the first few pages.
+
+   When running in user mode, could the process read/write the memory
+   mapped by page 1?  Here "page 1" is a page-table page (a level-1 or
+   level-0 page-table page in the middle of the tree).  Its PTE in the
+   parent page table does not have PTE_U set (xv6 maps page-table pages
+   with only PTE_V), so user code cannot read or write it; only the
+   kernel (supervisor) may touch page tables.
+
+   What does the third to last page contain?  The last three user pages
+   below the trampoline are: USYSCALL (the read-only page sharing the
+   process's struct usyscall/PID with user space), the TRAPFRAME page,
+   and the TRAMPOLINE page.  So the third-to-last page contains the
+   struct usyscall (the PID) used to speed up getpid(); it is mapped
+   PTE_R|PTE_U so the user can read it but not modify it.

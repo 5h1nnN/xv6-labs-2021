@@ -77,10 +77,32 @@ sys_sleep(void)
 
 
 #ifdef LAB_PGTBL
+// Report which of the first len pages starting at base have been
+// accessed, as a bit mask written to the user buffer at mask.
 int
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
+  uint64 base, maskaddr;
+  int len;
+  struct proc *p = myproc();
+  unsigned int mask = 0;
+  pte_t *pte;
+
+  if(argaddr(0, &base) < 0 || argint(1, &len) < 0 || argaddr(2, &maskaddr) < 0)
+    return -1;
+  if(len > 32 || len < 0)
+    return -1;
+
+  for(int i = 0; i < len; i++){
+    pte = walk(p->pagetable, base + i * PGSIZE, 0);
+    if(pte != 0 && (*pte & PTE_V) && (*pte & PTE_A)){
+      mask |= (1 << i);
+      *pte &= ~PTE_A;   // clear the access bit for the next call
+    }
+  }
+
+  if(copyout(p->pagetable, maskaddr, (char *)&mask, sizeof(mask)) < 0)
+    return -1;
   return 0;
 }
 #endif
