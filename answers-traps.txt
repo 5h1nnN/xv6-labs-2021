@@ -1,0 +1,75 @@
+Answers for Lab: traps (RISC-V assembly / user/call.asm)
+==========================================================
+
+Looking at user/call.asm (compiled on this machine):
+
+0000000000000024 <main>:
+void main(void) {
+  24:	1141                	addi	sp,sp,-16
+  26:	e406                	sd	ra,8(sp)
+  28:	e022                	sd	s0,0(sp)
+  2a:	0800                	addi	s0,sp,16
+  printf("%d %d\n", f(8)+1, 13);
+  2c:	4635                	li	a2,13
+  2e:	45b1                	li	a1,12
+  30:	00000517          	auipc	a0,0x0
+  34:	7d850513          	addi	a0,a0,2008 # 808 <...>
+  38:	00000097          	auipc	ra,0x0
+  3c:	616080e7          	jalr	1558(ra) # 64e <printf>
+
+Q1. Which registers contain arguments to functions?  Which register
+    holds 13 in main's call to printf?
+
+    Integer/pointer arguments are passed in registers a0-a7, first
+    argument in a0, second in a1, third in a2, etc.  In main's call to
+    printf, the format string is in a0, the second argument f(8)+1
+    (== 12) is in a1, and 13 (the third argument) is in register a2
+    ("li a2,13").
+
+Q2. Where is the call to f in the assembly for main?  Where is the call
+    to g?
+
+    There is no call to f or g in main.  The compiler inlined f (and g
+    inside f) and then constant-folded the whole computation: the only
+    trace left is "li a1,12", since f(8)+1 == (8+3)+1 == 12 was
+    computed at compile time.  (f and g do appear as separate functions
+    later in call.asm because they are non-static, but main never
+    calls them.)
+
+Q3. At what address is printf located?
+
+    0x64e.  main's jalr instruction at 0x3c is annotated "# 64e
+    <printf>", i.e. the target of the call is address 0x64e.
+
+Q4. What value is in ra just after the jalr to printf in main?
+
+    0x40.  jalr stores the address of the following instruction in ra
+    (pc + 4 == 0x40, the "li a0,0" before the call to exit).
+
+Q5. Output of:
+       unsigned int i = 0x00646c72;
+       printf("H%x Wo%s", 57616, &i);
+
+    57616 == 0xe110, so "%x" prints "e110"; the string "H" + "e110" +
+    " Wo" is printed, and then "%s" prints the bytes at &i.  On a
+    little-endian machine the bytes of i = 0x00646c72 in memory are
+    72 6c 64 00 = 'r','l','d','\0', i.e. the string "rld".  The full
+    output is therefore:
+
+        He110 World
+
+    If the machine were big-endian, i's bytes in memory would instead
+    be 00 64 6c 72, so to print the same string you would have to set
+    i = 0x726c6400 (bytes 72 6c 64 00).  57616 is just an integer
+    value printed with %x and does not depend on endianness, so it
+    would not need to change.
+
+Q6. What is printed after 'y='?
+       printf("x=%d y=%d", 3);
+
+    The value is undefined/garbage (in xv6, whatever happened to be in
+    register a2 when printf is called).  printf() reads its arguments
+    from the argument registers a1, a2, ... according to the format
+    string, but the caller only passed one integer argument, so nothing
+    ever loaded a2 with a meaningful value; printf prints whatever
+    junk is in a2.

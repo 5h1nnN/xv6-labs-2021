@@ -121,9 +121,29 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
+}
+
+// Print the addresses on the kernel call stack, using the frame
+// pointers that the compiler keeps in register s0.
+void
+backtrace(void)
+{
+  uint64 fp = r_fp();
+  uint64 top = PGROUNDUP(fp);   // top of this stack page
+
+  printf("backtrace:\n");
+  // Walk the chain of saved frame pointers while it stays on the
+  // kernel stack page.  The return address is at fp-8 and the saved
+  // frame pointer of the caller at fp-16.
+  while(fp != 0 && fp < top && fp >= top - PGSIZE){
+    uint64 ra = *(uint64 *)(fp - 8);
+    printf("%p\n", ra);
+    fp = *(uint64 *)(fp - 16);
+  }
 }
 
 void

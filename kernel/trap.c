@@ -77,8 +77,22 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    // If the process has an alarm pending, check whether its time
+    // has come to run the user-space handler.
+    if(p->interval > 0 && p->alarmactive == 0){
+      p->ticks++;
+      if(p->ticks >= p->interval){
+        p->ticks = 0;
+        // Save the interrupted user state so sigreturn() can restore it.
+        *p->alarm_tf = *p->trapframe;
+        p->alarmactive = 1;
+        // Resume in user space at the alarm handler.
+        p->trapframe->epc = p->handler;
+      }
+    }
     yield();
+  }
 
   usertrapret();
 }
