@@ -1,0 +1,30 @@
+Answers for Lab: Multithreading
+================================
+
+1) Why are there missing keys with 2 threads, but not with 1 thread?
+   Describe a sequence of events with 2 threads that leads to a key
+   missing.
+
+   put() is not atomic.  When two threads insert different keys that
+   hash to the same bucket, both execute:
+
+       insert(key, value, &table[i], table[i]);
+
+   which does:  e = malloc(...); e->next = table[i]; table[i] = e;
+
+   Race that loses an entry (thread A and B, same bucket, different
+   keys):
+     - A reads table[i] (say NULL) for its key KA;
+     - B reads table[i] (NULL) for its key KB;
+     - A sets table[i] = nodeA (KA now reachable);
+     - B sets table[i] = nodeB, overwriting A's node.
+   The result: table[i] == nodeB and nodeB->next == NULL, so KA is no
+   longer in the table - a missing key.  With one thread the steps
+   cannot interleave, so nothing is lost.  The same race can also lose
+   updates if both threads read the same existing entry.
+
+   Fix used in ph.c: one lock per bucket; put() (and get()) hold the
+   bucket's lock for the whole find+insert/update operation, so two
+   threads never interleave on the same bucket, while puts on different
+   buckets still proceed in parallel (which is what the ph_fast test
+   measures).
