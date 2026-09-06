@@ -312,12 +312,27 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+
+    if(*pte & PTE_U){
+      // Copy-on-write: share the parent's page with the child instead
+      // of copying it, and make the page read-only in both page tables.
+      incref(pa);
+      flags = (flags | PTE_COW) & ~PTE_W;
+      if(mappages(new, i, PGSIZE, pa, flags) != 0){
+        kfree((void*)pa);   // undo the incref
+        goto err;
+      }
+      *pte = PA2PTE(pa) | flags;   // clear PTE_W in the parent too
+    } else {
+      // Non-user pages (e.g. the stack guard page, whose PTE_U was
+      // cleared) stay private: copy them as before.
+      if((mem = kalloc()) == 0)
+        goto err;
+      memmove(mem, (char*)pa, PGSIZE);
+      if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+        kfree(mem);
+        goto err;
+      }
     }
   }
   return 0;
@@ -347,9 +362,21 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if(va0 >= MAXVA)
+      return -1;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      return -1;
+    // The kernel writes through physical addresses, bypassing the PTE,
+    // so turn a COW page into a private writable one first.
+    if(*pte & PTE_COW){
+      if(cowalloc(pagetable, va0) < 0)
+        return -1;
+    }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
@@ -431,4 +458,36 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// Turn the copy-on-write page containing va into a private writable
+// page for the given process: allocate a fresh page, copy the contents,
+// and replace the mapping.  Returns 0 on success and -1 if va is not a
+// COW mapping or no memory is available.
+int
+cowalloc(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa;
+  char *mem;
+  uint flags;
+
+  va = PGROUNDDOWN(va);
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return -1;
+  if((*pte & PTE_V) == 0 || (*pte & PTE_COW) == 0)
+    return -1;
+
+  pa = PTE2PA(*pte);
+  if((mem = kalloc()) == 0)
+    return -1;            // no memory: caller should kill the process
+  memmove(mem, (char*)pa, PGSIZE);
+
+  flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+  *pte = PA2PTE((uint64)mem) | flags;
+
+  // Drop this process's reference to the shared page.
+  kfree((void*)pa);
+  return 0;
 }

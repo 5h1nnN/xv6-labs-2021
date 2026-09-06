@@ -65,6 +65,11 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 15){
+    // store page fault: allocate a private copy if this is a COW page;
+    // kill the process if the fault cannot be fixed.
+    if(r_stval() >= MAXVA || cowalloc(p->pagetable, r_stval()) < 0)
+      p->killed = 1;
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
